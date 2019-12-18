@@ -1,0 +1,207 @@
+---
+title: "ClickHouse 数据库的起源 -- Yandex.Metrica"
+date: 2017-09-25T10:20:46+08:00
+draft: true
+---
+
+#+BEGIN_QUOTE
+本文是在[[http://highscalability.com/blog/2017/9/18/evolution-of-data-structures-in-yandexmetrica.html][这篇博文]]的基础上，结合我对 ClickHouse 的理解以及在社区进行调研并全面测试后形成的。
+#+END_QUOTE
+
+Yandex 的 [[https://metrica.yandex.com/about][Metrica]] 系统诞生于 2008 年，是仅此于 Google Analytics 的世界第二大网络分析系统。Metrica 处
+理的数据量从 2009 年的每天 2 亿事件增加到 了 2017 年的 250 亿以上。为了能在不断增长的数据量下提供给
+用户即时分析能力，Metrica 的底层系统完成了多次进化。那么 Metrica 所面临的业务场景是什么样的呢？简单
+来说，Metrica 实时接收各个网站和手机 APP 的事件数据流，并使得这些数据以可分析的形式展现给用户。其实
+就是俄罗斯版的 Google Analytics 或者国内百度统计，都是直接对外提供网站分析服务的平台。这里举一个
+Metrica 上的分析型报表查询语句例子：
+#+BEGIN_SRC sql
+  SELECT Visits, SumVisitTime FROM ClickData
+  WHERE SiteID = <sid> AND RegionID = <rid> AND VisitDate BETWEEN min_date AND max_date
+#+END_SRC
+其中事件数据已经在时间粒度上进行了一次预聚合，因此时间字段是 Unique 的。可以看出，为了加速查询，对
+SiteID，RegionID，VisitDate 构建联合索引是必要的。这里所面临的一个挑战是在大量实时数据流写入时维护索
+引。Metrica 早期版本对于网站业务只提供 40 多种固定的报表查询以及几个页内分析工具。如今，Metrica 支持
+用户完全自定义报表，用户可随意增加字段，修改聚合粒度以及调整指标。这个演化过程历经了三个系统，MyISAM、
+Metrage (LSM-Tree) 和 ClickHouse，下面我们来逐一看看 Metrica 是如何使用这几个系统的，以及 ClickHouse
+诞生的原因。
+
+* MyISAM
+
+  在 2008 年到 2011 年间，Metrica 使用 MySQL 的 MyISAM 引擎存储统计信息和报表。MyISAM 表由数据文件和索
+  引文件组成。如果没有删除操作或使得记录变长的更新操作，那么记录将按照插入顺序在数据文件中连续排列。
+  MyISAM 的索引（包括主键）是一棵 B 树，其中叶子节点包含数据文件中的偏移量。当进行索引范围查询时，首先
+  从索引中提取出数据文件的偏移量，然后读取数据文件。现实场景中，索引往往都被全量加载到内存中，但数据并
+  未被缓存。对于机械硬盘而言，查询所需的 IO 时间取决于需要读取的数据量以及查找操作对应的磁盘寻道次数。
+  为了保证数据能够实时入库，Metrica 事件入库的顺序与实际发生时间相同，因此不同站点的访问数据完全随机打
+  散，即，时间是有序的，但是主键是乱序的。这导致写入 MyISAM 表时，来自不同站点的数据随机放置，引发大量
+  的随机读写 IO。典型的 7200 RPM 硬盘每秒可以执行 100 到 200 次随机读。用 1U 服务器满盘配置 RAID0 也只
+  能做到每秒 1000 至 2000 次随机读。一个普通的 SSD 每秒可以执行 30,000 次随机读，但价格太贵。可以看出，
+  使用硬盘读取 10000 行的数据可能导致 10 多秒的等待时间，这将是完全不能接受的。细心的朋友可能想到改用
+  InnoDB 进行存储。InnoDB 使用聚簇索引存储主键，数据文件有序存放，因此极大减少了磁盘寻道次数。但是数据
+  的增删改性能要差了不少。Metrica 面向的场景需要源源不断地灌入数据，InnoDB 无法做到数据的实时入库。
+
+  于是 Yandex 对 MyISAM 引擎进行了一些优化，来加速主键范围查询。下面是三个主要的优化点：
+
+  - 表排序
+
+    通过将数据按照索引顺序排序，可以有效的避免随机读取。然而数据是不断变化的，对数据的一次排序是远远
+    不够的。每一次修改都排序都排序显然是不现实的。Yandex 采用了定期排序的方法，类似 TokuDB 的
+    Fractal Tree，还有 BigTable 的 LSM-Tree，本质上都是将数据的更改操作进行 Batching，延迟并成批维护。
+
+  - 表分区
+
+    这是通用的优化手段，按照数据的某些属性划分层级，分而治之。分区的一个好处是，区内的主键范围查询或
+    多或少有局部性，能减少磁盘的随机读。这类似于按照范围切割的局部聚簇索引。分区虽然降低了数据的插入
+    性能，但通过细心选择分区的数量，通常可以在插入速度与读取速度间达到妥协。
+
+  - 读写分离
+
+    当读写操作同时发生在一个分区上时，由于它们操作的本质顺序是不同的，对读的优化势必会影响到写，反之
+    亦然。一个显然的方法是把数据分成两类，近期的活跃数据 -- 热数据，和长期的归档数据 -- 冷数据。再通
+    过外部程序定期地完成数据由热至冷的转化。
+
+  Yandex 通过使用上述几个方法，还有其他的一些 Tricks，将 MyISAM 进行了深度的改造，支撑起了 Metrica 业
+  务。但随着时间的推移，数据量的增大，他们又遇到了许多新的问题：
+
+  1. 通过分区来保持数据的局部性是很困难的
+
+  2. 索引膨胀，甚至超出了内存的大小，无法全部放在内存中
+
+  3. 数据很难有效地进行压缩
+
+  4. 数据的聚合算子支持很少，很多逻辑需要在上层业务代码里实现
+
+  5. Sharding 和热冷转化需要人工操作
+
+  可以看出，MyISAM 距离 Metrica 的需求还差得很远。Metrica 在使用 MyISAM 时，通常服务器都是在满载运作，
+  坏盘的现象也经常发生，这说明其对硬件十分不友好。Yandex 用 MyISAM 一共存储了 5800 亿的记录，最终下定
+  决心更换系统，也就是接下来要介绍的 Metrage。
+
+* Metrage 与 OLAPServer
+
+  为了能够从架构上优化 Metrica，Yandex 把他们所面临的场景进行了总结：数据持续不断地以每秒几十万条的速
+  率按小批入库，而每秒的查询请求大概只有几千，且查询所触碰的数据范围很小，大概在 KB 级别。聪明的读者应
+  该很快能猜到，有一个常见的数据结构就能很好地满足这个场景，它就是 LSM-Tree。LSM-Tree 被应用在很多系统
+  中，如 HBase、Cassandra，LevelDB、RocksDB。目前 RocksDB 因为优秀的工程实现而被集成进了很多数据库中，
+  有 MyRocks、MongoRocks、TiDB、CockroachDB 等等。Metrage 也是基于 LSM-Tree 实现的，整体上看就是一个有
+  序的局部聚簇 KV 存储，且 Value 字段支持任意类型的加法和合并操作，即 CRDT 结构。如果想要了解更多关于
+  CRDT，可以参看[[http://hal.upmc.fr/docs/00/55/55/88/PDF/techreport.pdf][这篇文章]]。虽然几乎所有的 LSM-Tree 都能达到与 Metrage 类似的读写性能，但是适配这些系统
+  使其支持任意数据类型的 CRDT 操作要比开发 Metrage 花更多的时间。
+
+  Metrage 的工作方式大致如下：首先根据需要生成的报表类型，创建对应的聚合表，并声明 Value 字段的聚合方式。
+  #+BEGIN_EXAMPLE
+  <SiteID, RegionID, VisitDate> -----> <Visits, SumVisitTime>
+  #+END_EXAMPLE
+  当数据到来时，根据不同的主键类型路由至一张或多张聚合表，增量聚合。Metrage 的增量聚合操作一共发生在
+  三个地方，a) 数据插入触发新 Batch 时，旧 Batch 进行 Merge；b) 后台进程定期 Merge；c) 某些读请求也
+  会触发 Merge。Metrage 还支持将业务逻辑下推至聚合表中。如果一张表的主键是 <city, village>，通过内置
+  的 city->country 映射关系，Metrage 会自动生成对 country 的聚合信息.
+
+  由于数据基本是按照主键局部有序的，主键范围查询非常快。数据的局部有序性也使得数据能更好地被压缩。为
+  了解决索引文件过大的问题，Metrage 利用了数据聚簇的特性，将精确点索引改为了稀疏索引，每个索引项负责
+  一块数据。这样索引就能够全量存放在内存中。这也导致 Metrage 不能在数据插入时进行 Unique 检查，因为
+  索引不精确。由于数据是按块写入磁盘的 (LSM-Tree 的特性)，读写操作区天然分隔开了，避免了不必要的锁。
+
+  Metrage 存储了 3 万亿余行的数据，仅仅使用了不到 80 台的服务器。但是它存储的是预聚合的数据，因此只适
+  用与固定的报表生成。这极大地限制了用户的使用。举例来说，分析师在制作报表时，提前是不能确切知道报表长
+  什么样子的。通常他们会先通过 Ad Hoc 查询生成多种不同的报表，以此来了解数据的特征，并测试一些假设条件。
+  只有通过从不同的角度查看数据，以及充分的假设检验，才能生成一份有价值的报表。但是，为了支持自定义报表，
+  就需要存储所有的原始数据，每一个事件的所有属性都要记录在一张表里，这将导致这张表特别宽。而对这个表做
+  查询时，往往只涉及到极少数的列，这时大部分的磁盘 IO 都是多余的。同时，指标的值一般都很小，最多不超过
+  100 字节。如果我们在加上前文叙述的几个特点，那么，列存数据库解决方案就呼之欲出了。关于列存数据库这里
+  就不展开介绍了，感兴趣的读者推荐阅读[[http://nms.csail.mit.edu/~stavros/pubs/tutorial2009-column_stores.pdf][这个 Slides]]。总之，列存数据库的高压缩率和矢量计算能力能够同时
+  解决了磁盘和 CPU 的性能瓶颈。
+
+  为了验证列存数据库的有效性，Yandex 研发了一个简易的列存数据库 -- OLAPServer。这可以看作是一个原型系
+  统。OLAPServer 只支持一张大宽表，用来存储所有的指标数据；只支持简单的小数值类型存储；数据是非实时的，
+  通常一天更新几次；查询也只支持简单的过滤和聚合。尽管如此，OLAPServer 依然起到了很好的效果。Metrica
+  用它存储了 7000 多亿的数据，使得用户能够更自由地选择报表的生成方式，查询也能够实时 (秒内) 响应。可以
+  看出，虽然 OLAPServer 只是一个实验产品，但 Yandex 通过该系统认识到了列存的重要性，他们意识到 Metrica
+  所面临的场景和 KV 存储系统是不匹配的。于是，ClickHouse 应运而生。
+
+* ClickHouse
+
+  如果我们可以从原始的非聚合数据中完成实时查询并生成任意的报表，那么数据的预聚合就失去了意义。虽然预聚
+  合能够大量减小查询所面临的数据量，但是，固定的聚合方式限制了 Metrage 的使用场景，且面对大基数列 (如
+  URL)，预聚合毫无意义，反而增加了系统的负担。同时，实际的生产环境中，很多预聚合结果并没有被使用到，反
+  而导致数据的修改变得异常困难。相反，如果直接在原始数据上查询，整体的计算量可能更小，但是系统需要更精
+  心的设计。ClickHouse 便是这一精心设计的产物，它可以看成是 OLAPServer 经过雕琢之后的系统。
+
+  ClickHouse 是一个列存的矢量数据库，其数据加载，数据索引的思路和 Metrica 类似，不过将存储从 KV 改为
+  了列存。ClickHouse 支持非常多的 Storage Engine，其中 MergeTree 这类引擎运用了 LSM-Tree 的思想，将
+  所有的列按照主键的顺序排放，延迟维护。这和 Apache Kudu 很相似。除此之外，ClickHouse 还支持数十种其
+  他的存储引擎。例如，AggregatingMergeTree 能够将重复的主键在 Merge 的时候按照给定的方式聚合，这在加
+  上物化试图，就是 Metrage 的实现；CollapsingMergeTree 支持将主键重复的记录精简至两条，可以看成是压
+  缩后的 Change Log，通常用于计算差值统计信息；ReplacingMergeTree 用于主键去重等等。ClickHouse 还支
+  持 Distributed Engine 和 Replicated Engine，对应数据的 Sharding 和 Replication。这两个功能都是通过
+  Zookeeper 来实现的，具体细节可以参见[[https://clickhouse.yandex/docs/en/table_engines/replication.html][这里]]。
+
+  ClickHouse 的查询性能非常优秀。下面是摘自[[http://tech.marksblogg.com/benchmarks.html][这篇博文]]的部分测试结果：
+
+  | Query 1 | Query 2 | Query 3 | Query 4 | Setup                                     |
+  |---------+---------+---------+---------+-------------------------------------------|
+  |   0.021 |   0.053 |   0.165 |    0.51 | MapD & 8 Nvidia Pascal Titan Xs           |
+  |   0.027 |   0.083 |   0.163 |   0.891 | MapD & 8 Nvidia Tesla K80s                |
+  |   0.028 |     0.2 |   0.237 |   0.578 | MapD & 4-node g2.8xlarge cluster          |
+  |   0.034 |   0.061 |   0.178 |   0.498 | MapD & 2-node p2.8xlarge cluster          |
+  |   0.036 |   0.131 |   0.439 |   0.964 | MapD & 4 Nvidia Titan Xs                  |
+  |   0.051 |   0.146 |   0.047 |   0.794 | kdb+/q & 4 Intel Xeon Phi 7210 CPUs       |
+  |   0.762 |   2.472 |   4.131 |   6.041 | BrytlytDB & 2-node p2.16xlarge cluster    |
+  |   1.034 |   3.058 |   5.354 |  12.748 | ClickHouse, Intel Core i5 4670K           |
+  |    1.56 |    1.25 |    2.25 |    2.97 | Redshift, 6-node ds2.8xlarge cluster      |
+  |       2 |       2 |       1 |       3 | BigQuery                                  |
+  |       4 |       4 |      10 |      21 | Presto, 50-node n1-standard-4 cluster     |
+  |    6.41 |    6.19 |    6.09 |    6.63 | Amazon Athena                             |
+  |     8.1 |   18.18 |     n/a |     n/a | Elasticsearch (heavily tuned)             |
+  |   10.19 |   8.134 |  19.624 |  85.942 | Spark 2.1, 11 x m3.xlarge cluster w/ HDFS |
+  |      11 |      10 |      21 |      31 | Presto, 10-node n1-standard-4 cluster     |
+  |  14.389 |  32.148 |  33.448 |  67.312 | Vertica, Intel Core i5 4670K              |
+  |   34.48 |    63.3 |     n/a |     n/a | Elasticsearch (lightly tuned)             |
+  |      35 |      39 |      64 |      81 | Presto, 5-node m3.xlarge cluster w/ HDFS  |
+  |      43 |      45 |      27 |      44 | Presto, 50-node m3.xlarge cluster w/ S3   |
+  |     152 |     175 |     235 |     368 | PostgreSQL 9.5 & cstore_fdw               |
+  |     264 |     313 |     620 |     961 | Spark 1.6, 5-node m3.xlarge cluster w/ S3 |
+  |    1103 |    1198 |    2278 |    6446 | Spark 2.2, 3-node Raspberry Pi cluster    |
+
+  可以看出，ClickHouse 的单机性能已经接近甚至超越 GPU 数据库了，令人佩服。
+
+  ClickHouse 拥有非常庞大的 UDF/UDA 库，支持嵌套类型，支持高阶函数。这里是我在单机 ClickHouse 上测试
+  Word Count 的结果：
+
+  - 测试环境
+
+    | 测试环境                                                              |
+    |-----------------------------------------------------------------------|
+    | Linux Kernel: 3.10.0-514.26.2.el7.x86_64 x86_64                       |
+    | System: Dell product: PowerEdge R720xd                                |
+    | CPU: 2 Hexa core Intel Xeon E5-2620 0s (-HT-MCP-SMP-) cache: 30720 KB |
+    | Network: Intel I350 Gigabit Network Connection driver: igb            |
+    | Drive:  Raid-5 12 SATA 3TB disks                                      |
+    | Memory: 80GB                                                          |
+
+  - 测试语句
+
+    #+BEGIN_SRC sql
+      SELECT
+      arrayJoin(extractAll(line, '[a-zA-Z’]')) AS word,
+      count()
+      FROM lines
+      GROUP BY word
+    #+END_SRC
+
+  - 测试结果
+
+    | 文档大小 | Spark   | Flink   | ClickHouse |
+    |----------+---------+---------+------------|
+    | 1 GB     | 25 秒   | 19 秒   | 2 秒       |
+    | 10 GB    | 231 秒  | 173 秒  | 18 秒      |
+    | 100 GB   | 2587 秒 | 1822 秒 | 191 秒     |
+
+  ClickHouse 的单机性能要比 Spark、Flink 高一个数量级。我还对官方文档的测试内容进行了重现，感兴趣的
+  朋友可以参见[[https://wentropy.com/post/clickhouse-test/][这篇文章]]。结论是：对于 500GB 数据量，单机 ClickHouse 几乎所有的查询都能在秒级返回。
+
+  ClickHouse 的出现改变了用户解决问题的方式，可谓是一个 Truely Game Changer。可以看出，为了最大限度地
+  提高效率，系统的设计需要对业务进行针对性的定制。没有一种系统可以很好地处理完全不同的场景。对于负载越
+  高的系统，其业务面往往越窄，针对性越强。Metrica 使用 ClickHouse 使用廉价的硬件完成了这种针对性的定制，
+  这也说明了系统设计的重要性。目前硬件更新换代的趋势不断加剧，这将进一步冲击数据库市场。相信在不久的将
+  来，又会有更多的新型数据库面世，让我们拭目以待吧！

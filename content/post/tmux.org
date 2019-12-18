@@ -1,0 +1,14 @@
+---
+title: "Tmux特性挖掘"
+date: 2017-09-11T19:57:55+08:00
+---
+
+* 使用Pane Status显示当前路径
+
+* Capture与Vim结合
+
+* tmuxgdb
+
+* Session管理
+
+* Pane Swap和Ranger

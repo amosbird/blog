@@ -1,0 +1,110 @@
+baseURL = "https://wentropy.com"
+title = "人体工程码学"
+theme = "hugo-coder"
+languageCode = "zh-cn"
+defaultcontentlanguage = "zh-cn"
+enableRobotsTXT = true
+pygmentsuseclasses = true
+PygmentsCodeFences = true
+canonifyurls = true
+
+paginate = 20
+
+pygmentsstyle = "bw"
+pygmentscodefences = true
+pygmentscodefencesguesssyntax = true
+
+disqusShortname = "Amos"
+
+# Google Analytics UA number
+googleAnalytics = "UA-68172348-1"
+
+# Copyright of your post
+copyright = "© This post is licensed under a Creative Commons Attribution-NonCommercial 4.0 International License，please give source if you likes to quote or reproduce."
+
+# Menu links
+[[menu.main]]
+    name = "Blog"
+    weight = 1
+    url  = "/post/"
+[[menu.main]]
+    name = "About"
+    weight = 2
+    url = "/about/"
+
+# Add your own params here
+[params]
+  author = "Amos Bird"
+  info = "A Bird"
+  avatarurl = "images/avatar.jpg"
+  seotitle = "人体工程码学"
+  subtitle = "Wir müssen wissen. Wir werden wissen."
+  keywords = "blog,developer,personal"
+  footercontent = '<p><a href="http://www.beian.miit.gov.cn" title="Check ICP info" target="_blank" rel="noopener">京ICP备17037097号</a></p>'
+  hidecredits = true
+  hidecopyright = true
+  rtl = false
+  math = true
+  custom_css = ["css/custom.css"]
+
+  # Choose your social networks
+  email = "amosbird@gmail.com"
+  github = "amosbird"
+  twitter = "amosbird"
+  linkedin = "amosbird"
+  wechat= "images/qrcode.png" # Replace with your wechat qrcode image
+  facebook = "amosbird0"
+  google = "+amosbird"
+  # instagram = "instagram_username"
+  # youtube = "youtube_username"
+  # vimeo = "vimeo_username"
+  # medium = "medium_username"
+  # quora = "quora_username"
+  # pinterest = "pinterest_username"
+  # dribbble = "dribbble_username"
+  # behance = "behance_username"
+  # jsfiddle = "jsfiddle_username"
+  # codepen = "codepen_username"
+  # zhihu = "zhihu_username"
+  # douban = "douban_username"
+  # bilibili = "bilibili_id_number"
+
+  # Changyan Comments (China Only)
+  changyan = true
+  changyanId = "cytd3akaT"
+  changyanConf = "prod_bb8978bd15d91551eeebc9b5b82039b4"
+
+  # Google Webmaster
+  # https://www.google.com/webmasters/
+  googleSiteVerification = "edYegioVakVFJwHjWE1MTuQt7i7T5VDsCiRZSwtTTyA"
+
+  # Bing Webmaster
+  # https://www.bing.com/toolbox/webmaster/
+  # msValidate = "22596E34341DD1D17D6022C44647E587"
+
+  # Baidu Webmaster (China Only)
+  # https://zhanzhang.baidu.com/
+  # baiduSiteVerification = "MZ23SPxxfa"
+
+  # Sogou Webmaster (China Only)
+  # http://zhanzhang.sogou.com/
+  # sogouSiteVerification = "m2jktMQTZm"
+
+  # 360 Webmaster (China Only)
+  # http://zhanzhang.so.com/
+  # soSiteVerification = "b7ab3b4c2edbc856642004d1b8c27a91"
+
+  # Baidu Tongji (China Only)
+  # https://tongji.baidu.com/
+  # baiduTongji = "e21dc1e8a592188271b615159dc88af7"
+
+[deployment]
+# By default, files are uploaded in an arbitrary order.
+# Files that match the regular expressions in the "Order" list
+# will be uploaded first, in the listed order.
+# order = [".jpg$", ".gif$"]
+
+
+[[deployment.targets]]
+# An arbitrary name for this target.
+name = "wentropy"

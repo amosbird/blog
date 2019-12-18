@@ -1,0 +1,58 @@
+---
+title: "图片剪贴板"
+date: 2017-09-11T16:48:16+08:00
+---
+
+* 剪贴板自动管理图片
+
+当复制一张图片时，使用CopyQ自动将图片存储在指定位置，并生成MIME text。
+
+执行粘贴动作时，如果支持图片粘贴，则粘贴图片，否则粘贴对应的图片文件名。
+
+
+* 用途
+
+ - 截图，迅速拷贝图片至对应目录
+ - 各类文本编辑器粘图
+ - 图片检索
+ - 等等
+
+ [[/home/amos/Pictures/Screenshots/img-2017-09-11-220938.png]]
+ fwe
+ wefwef
+
+** fff
+
+ fwef
+
+* 代码
+
+#+BEGIN_SRC
+[Command]
+Automatic=true
+Command="
+    copyq:
+    var imageDir = Dir().homePath() + '/Pictures/copyq/'
+    var imageFileName = 'copied-' + dateString('yyyy-MM-dd-HH_mm_ss') + '.png'
+    var imagePath = imageDir + '/' + imageFileName
+
+    if (!Dir().mkpath(imageDir)) {
+      popup('Failed to create directory for images')
+      abort()
+    }
+
+    var f = new File(imagePath)
+    if (!f.openWriteOnly() || f.write(input()) == -1) {
+      popup('Failed to save image', f.errorString())
+      abort()
+    }
+    f.close()
+    setData(mimeText, '[[' + imagePath + ']]')
+    copy(
+      mimeText, '[[' + imagePath + ']]',
+      'image/png', input()
+    )"
+Icon=\xf03e
+Input=image/png
+Name=Save Copied Images
+#+END_SRC

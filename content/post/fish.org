@@ -1,0 +1,30 @@
+---
+title: "Fish Shell"
+date: 2017-09-11T19:57:55+08:00
+---
+
+* Bracketed Paste Hook
+
+* Directory跳转
+
+* 结合Direnv实现.profile解耦
+
+* rm替代
+
+#+BEGIN_SRC
+function r
+  if test (count $argv) -lt 1
+    echo "Usage: $_ <filename|dir>*"
+    return 1
+  end
+  mv --backup=numbered $argv ~/.trash
+end
+#+END_SRC
+
+* Prompt计时
+
+* 工具集
+
+  - dtrx
+  - jump
+  - fzf

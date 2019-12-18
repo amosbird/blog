@@ -1,0 +1,10 @@
+---
+title: "使用浏览器实现文档查阅"
+date: 2017-09-11T19:57:55+08:00
+---
+
+* Qutebrowser浏览器
+
+* Zealdoc和Emacs browser
+
+* i3窗口管理器

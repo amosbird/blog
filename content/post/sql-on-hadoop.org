@@ -1,0 +1,10 @@
+---
+title: "Sql on Hadoop"
+date: 2017-09-26T18:11:19+08:00
+draft: true
+---
+
+
+Cloudera Impala, Spark SQL, Presto, and Apache Drill. Although such systems can work effectively
+with queries for internal analytical tasks, it is difficult to imagine them as the backend for the
+web interface of an analytical system accessible to external users.

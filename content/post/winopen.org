@@ -1,0 +1,8 @@
+---
+title: "Linux下Windows虚拟机应用"
+date: 2017-09-11T19:57:55+08:00
+---
+
+* 使用VirtualBox打开Windows应用
+
+* 直接访问QQ和阿里旺旺链接
